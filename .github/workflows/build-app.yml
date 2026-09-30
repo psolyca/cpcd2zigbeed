@@ -1,0 +1,187 @@
+name: Build app
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      upstream_image:
+        required: true
+        type: string
+      upstream_repo:
+        required: true
+        type: string
+      upstream_revision:
+        required: true
+        type: string
+      upstream_version:
+        required: true
+        type: string
+
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-latest
+    outputs:
+      architectures: ${{ steps.info.outputs.architectures }}
+      build_matrix: ${{ steps.matrix.outputs.matrix }}
+      image_name: ${{ steps.normalize.outputs.image_name }}
+      name: ${{ steps.normalize.outputs.name }}
+      description: ${{ steps.normalize.outputs.description }}
+      url: ${{ steps.normalize.outputs.url }}
+      registry_prefix: ${{ steps.normalize.outputs.registry_prefix }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Get app information
+        id: info
+        uses: home-assistant/actions/helpers/info@master
+        with:
+          path: "./${{ inputs.app }}"
+
+      - name: Normalize app information
+        id: normalize
+        run: |
+          image=${{ steps.info.outputs.image }}
+          echo "image_name=${image##*/}" >> "$GITHUB_OUTPUT"
+          echo "registry_prefix=${image%/*}" >> "$GITHUB_OUTPUT"
+          #version=${{ steps.info.outputs.version }}
+          #echo "version=${version}" >> "$GITHUB_OUTPUT"
+          name=${{ steps.info.outputs.name }}
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          description=${{ steps.info.outputs.description }}
+          echo "description=${description}" >> "$GITHUB_OUTPUT"
+          url=${{ steps.info.outputs.url }}
+          if [[ -n "$url" && "$url" != "null" ]]; then
+            echo "url=${url}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare build matrix
+        id: matrix
+        uses: home-assistant/builder/actions/prepare-multi-arch-matrix@2026.09.0
+        with:
+          architectures: ${{ steps.info.outputs.architectures }}
+          image-name: ${{ steps.normalize.outputs.image_name }}
+          registry-prefix: ${{ steps.normalize.outputs.registry_prefix }}
+
+  build:
+    name: Build ${{ matrix.arch }} image
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build image
+        uses: home-assistant/builder/actions/build-image@2026.09.0
+        with:
+          arch: ${{ matrix.arch }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          context: "./${{ inputs.app }}"
+          image: ${{ matrix.image }}
+          image-tags: |
+            ${{ inputs.version }}
+            latest
+          labels: |
+            io.hass.name=${{ needs.prepare.outputs.name }}
+            io.hass.description=${{ needs.prepare.outputs.description }}
+            ${{ needs.prepare.outputs.url && format('io.hass.url={0}', needs.prepare.outputs.url) || '' }}
+          build-args: |
+            UPSTREAM_REVISION=${{ inputs.upstream_revision }}
+            UPSTREAM_IMAGE=${{ inputs.upstream_image }}
+            UPSTREAM_VERSION=${{ inputs.upstream_version }}
+            UPSTREAM_REPOSITORY=${{ inputs.upstream_repo }}
+          push: true
+          version: ${{ inputs.version }}
+
+  manifest:
+    name: Publish multi-arch manifest
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      packages: write
+    steps:
+      - name: Publish multi-arch manifest
+        uses: home-assistant/builder/actions/publish-multi-arch-manifest@2026.09.0
+        with:
+          architectures: ${{ needs.prepare.outputs.architectures }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          image-name: ${{ needs.prepare.outputs.image_name }}
+          image-tags: |
+            ${{ inputs.version }}
+            latest
+          registry-prefix: ${{ needs.prepare.outputs.registry_prefix }}
+
+  commit-version:
+    name: Commit new app version
+    needs: [manifest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: true
+
+      - name: Update app version
+        env:
+          NEXT_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - "${NEXT_VERSION}" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+          next_version = sys.argv[1]
+          path = Path("${{ inputs.app }}/config.yaml")
+          text = path.read_text(encoding="utf-8")
+          new_text, count = re.subn(
+              r'^version:\s*["\']?\d+\.\d+\.\d+["\']?\s*$',
+              f'version: "{next_version}"',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if count != 1:
+              raise SystemExit("Unable to update version in ${{ inputs.app }}/config.yaml")
+          path.write_text(new_text, encoding="utf-8")
+          PY
+
+      - name: Commit and push new version
+        env:
+          NEXT_VERSION: ${{ inputs.version }}
+          UPSTREAM_REVISION: ${{ inputs.upstream_revision }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "Damien Gaignon"
+          git config user.email "damien.gaignon@gmail.com"
+          git add ${{ inputs.app }}/config.yaml
+          if git diff --cached --quiet; then
+            echo "No version change."
+            exit 0
+          fi
+          git commit \
+            -m "chore: release ${{ inputs.app }} ${NEXT_VERSION}" \
+            -m "Built from rtl8196e-gateway@${UPSTREAM_REVISION}"
+          git push origin "HEAD:${{ github.event.repository.default_branch }}"

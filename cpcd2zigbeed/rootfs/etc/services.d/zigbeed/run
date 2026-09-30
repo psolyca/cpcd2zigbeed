@@ -1,0 +1,26 @@
+#!/usr/bin/env bashio
+set -euo pipefail
+
+CPCD_INSTANCE="$(bashio::config 'cpcd_instance')"
+ZIGBEED_PORT="$(bashio::config 'zigbeed_port')"
+ZIGBEED_DEBUG="$(bashio::config 'zigbeed_debug')"
+ZIGBEED_IID="$(bashio::config 'zigbeed_iid')"
+CPC_BROADCAST_IID="$(bashio::config 'cpc_broadcast_iid')"
+ZIGBEED_BIND="$(bashio::config 'zigbeed_bind')"
+
+mkdir -p /var/lib/zigbeed
+
+bashio::log.info "Waiting for cpcd instance directory"
+until [[ -d "/dev/shm/cpcd/${CPCD_INSTANCE}" ]]; do
+  sleep 1
+done
+
+ZIGBEED_INTERFACE="tcp-listen://${ZIGBEED_BIND}:${ZIGBEED_PORT}"
+
+bashio::log.info "Starting zigbeed"
+bashio::log.info "EZSP interface: ${ZIGBEED_INTERFACE}"
+
+exec /usr/local/bin/zigbeed \
+  -r "spinel+cpc://${CPCD_INSTANCE}?iid=${ZIGBEED_IID}&iid-list=${CPC_BROADCAST_IID}" \
+  -p "${ZIGBEED_INTERFACE}" \
+  -d "${ZIGBEED_DEBUG}"

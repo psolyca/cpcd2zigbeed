@@ -1,0 +1,6 @@
+# CI-only files
+.build/
+cpcd-zigbeed/rootfs/usr/local/bin/cpcd
+cpcd-zigbeed/rootfs/usr/local/bin/zigbeed
+cpcd-zigbeed/rootfs/usr/local/lib/
+cpcd-zigbeed/rootfs/usr/share/doc/zigbeed/

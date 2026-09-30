@@ -1,0 +1,45 @@
+name: "CPCd2Zigbeed"
+version: "1.0.0"
+slug: "cpcd2zigbeed"
+description: >-
+  CPCd to Zigbeed bridge to connect the EFR32 RCP firmware to Zigbee2MQTT usefull for
+  the RTL8196E Gateway with Open Linux Firmware.
+url: "https://github.com/psolyca/cpcd2zigbeed"
+
+arch:
+  - aarch64
+  - amd64
+
+startup: application
+boot: auto
+init: false
+
+ports:
+  9999/tcp: 9999
+
+ports_description:
+  9999/tcp: "zigbeed EZSP TCP listener"
+
+options:
+  rcp_host: "192.168.1.1"
+  rcp_port: 8888
+  cpcd_instance: "cpcd_0"
+  cpc_broadcast_iid: 0
+  zigbeed_port: 9999
+  zigbeed_debug: 0
+  zigbeed_iid: 1
+  zigbeed_bind: "0.0.0.0"
+
+schema:
+  rcp_host: "str"
+  rcp_port: "port"
+  cpcd_instance: "str"
+  cpc_broadcast_iid: "int(0,255)"
+  zigbeed_port: port
+  zigbeed_debug: "int(0,1)"
+  zigbeed_iid: "int(0,255)"
+  zigbeed_bind: "str"
+
+# The final image is published separately per architecture.
+# Home Assistant expands {arch} to the architecture-specific image name.
+image: "ghcr.io/psolyca/cpcd2zigbeed"

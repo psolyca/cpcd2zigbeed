@@ -1,0 +1,25 @@
+configuration:
+  rcp_host:
+    name: RTL8196E gateway IP
+    description: IP of the RTL8196E gateway (Lidl or Sengled) (keep default)
+  rcp_port:
+    name: RTL8196E gateway port
+    description: Port of the rtl8196e gateway (Lidl or Sengled)
+  cpcd_instance:
+    name: CPCd instance name
+    description: Co-Processor Communication daemon instance name (keep default)
+  cpc_broadcast_iid:
+    name: CPCd iid
+    description: CPC daemon interface id (iid) which is used to differentiate between multiple networks using the same RCP (keep default)
+  zigbeed_port:
+    name: zigbeed TCP listener
+    description: zigbeed EZSP TCP listener for Zigbee2MQTT / ZHA
+  zigbeed_debug:
+    name: zigbeed debug level
+    description: zigbeed debug level
+  zigbeed_iid:
+    name: zigbeed process interface id
+    description: zigbeed process interface id (iid) which is used to differentiate between multiple networks using the same RCP (keep default)
+  zigbeed_bind:
+    name: zigbeed binding IP
+    description: Binding IP of zigbeed (keep default)

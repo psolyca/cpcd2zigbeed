@@ -1,0 +1,235 @@
+name: Build Home Assistant cpcd-zigbeed
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"
+      timezone: "Europe/Paris"
+
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force a rebuild even when the upstream revision is unchanged"
+        required: false
+        type: boolean
+        default: false
+
+# Never run two releases at the same time.
+# A queued run waits instead of cancelling an in-progress release.
+concurrency:
+  group: cpcd2zigbeed-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  APP: cpcd2zigbeed
+  UPSTREAM_IMAGE: ghcr.io/jnilo1/cpcd-zigbeed
+  UPSTREAM_REPOSITORY: https://github.com/jnilo1/rtl8196e-gateway
+  UPSTREAM_REPO: jnilo1/rtl8196e-gateway
+  UPSTREAM_BRANCH: main
+
+jobs:
+  check_and_decide:
+    name: Check upstream images and revision and compare to current app
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.decision.outputs.should_build }}
+      upstream_revision: ${{ steps.upstream_metadata.outputs.revision }}
+      upstream_version:  ${{ steps.upstream_metadata.outputs.version }}
+      next_version: ${{ steps.version.outputs.next_version }}
+      app: ${{ env.APP  }}
+      upstream_image: ${{ env.UPSTREAM_IMAGE }}
+      upstream_repository: ${{ env.UPSTREAM_REPOSITORY }}
+
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Create image template
+        id: app_images
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$(sed -nE 's/^image:[[:space:]]*["]?([^"]+)["]?[[:space:]]*$/\1/p' ${APP}/config.yaml | head -n1)"
+          if [[ -z "${image}" ]]; then
+            echo "::error::Cannot read image from ${APP}/config.yaml"
+            exit 1
+          fi
+          if [[ "${image}" != *"/${APP}" ]]; then
+            echo "::error::Expected image format .../${APP}"
+            exit 1
+          fi
+          prefix="${image%${APP}}"
+
+          echo "amd64_image=${prefix}amd64-${APP}" >> "$GITHUB_OUTPUT"
+          echo "aarch64_image=${prefix}aarch64-${APP}" >> "$GITHUB_OUTPUT"
+
+      - name: Read current app version
+        id: app_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -nE 's/^version:[[:space:]]*["]?([^"]+)["]?[[:space:]]*$/\1/p' ${APP}/config.yaml | head -n1)"
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be X.Y.Z"
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Read upstream image metadata
+        id: upstream_metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull ${UPSTREAM_IMAGE}:latest
+          revision="$(docker inspect "${UPSTREAM_IMAGE}":latest --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          echo "Upstream revision: ${revision:0:7}"
+          echo "revision=${revision:0:7}" >> "$GITHUB_OUTPUT"
+          version="$(docker inspect "${UPSTREAM_IMAGE}":latest --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+          echo "Upstream version: ${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Check that upstream pre-built image is available for both architectures
+        id: upstream_image
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! docker buildx imagetools inspect "${UPSTREAM_IMAGE}:latest" > /tmp/upstream-image.txt 2>&1; then
+            cat /tmp/upstream-image.txt >&2 || true
+            echo "Upstream image tag ${TAG} is not published yet. Nothing to build."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cat /tmp/upstream-image.txt
+          if ! grep -Eq 'linux/amd64|linux/arm64' /tmp/upstream-image.txt; then
+            echo "::error::Upstream image ${UPSTREAM_IMAGE}:latest is not a multi-arch image."
+            exit 1
+          fi
+          if ! grep -Eq 'linux/amd64' /tmp/upstream-image.txt || \
+             ! grep -Eq 'linux/arm64' /tmp/upstream-image.txt; then
+            echo "::error::Upstream image ${UPSTREAM_IMAGE}:latest is missing amd64 or arm64."
+            exit 1
+          fi
+          echo "Upstream images are availabled"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read upstream revision labels from current app images
+        id: current_image_upstream_labels
+        env:
+          AMD64_IMAGE: ${{ steps.app_images.outputs.amd64_image }}
+          AARCH64_IMAGE: ${{ steps.app_images.outputs.aarch64_image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          read_revision() {
+            local image="$1"
+            local platform="$2"
+            local pull_output
+            local rc
+            local revision
+            set +e
+            pull_output="$(docker pull --platform="${platform}" "${image}:latest" 2>&1)"
+            rc=$?
+            set -e
+            if [[ "${rc}" -ne 0 ]]; then
+              if grep -qiE 'manifest unknown|manifest .*not found|not found|does not exist' <<< "${pull_output}"; then
+                echo ""
+                return 0
+              fi
+              printf '%s\n' "${pull_output}" >&2
+              echo "::error::Unable to inspect ${image}:latest"
+              exit 1
+            fi
+            revision="$(docker inspect "${image}:latest" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+            printf '%s\n' "${revision}"
+          }
+          amd64_revision="$(read_revision "${AMD64_IMAGE}" "linux/amd64")"
+          aarch64_revision="$(read_revision "${AARCH64_IMAGE}" "linux/arm64")"
+          echo "amd64_revision=${amd64_revision}" >> "$GITHUB_OUTPUT"
+          echo "aarch64_revision=${aarch64_revision}" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether to build
+        id: decision
+        env:
+          UPSTREAM_REVISION: ${{ steps.upstream_metadata.outputs.revision }}
+          UPSTREAM_READY: ${{ steps.upstream_image.outputs.ready }}
+          AMD64_REVISION: ${{ steps.current_image_upstream_labels.outputs.amd64_revision }}
+          AARCH64_REVISION: ${{ steps.current_image_upstream_labels.outputs.aarch64_revision }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${UPSTREAM_READY}" != "true" ]]; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "first_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -z "${AMD64_REVISION}" && -z "${AARCH64_REVISION}" ]]; then
+            echo "first_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "first_release=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ "${FORCE}" == "true" ]]; then
+            echo "Force rebuild requested."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "${AMD64_REVISION}" == "${UPSTREAM_REVISION}" &&
+                "${AARCH64_REVISION}" == "${UPSTREAM_REVISION}" ]]; then
+            echo "Both final images already contain upstream ${UPSTREAM_REVISION}."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Upstream changed or one final image is missing."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Calculate Home Assistant app version
+        id: version
+        if: steps.decision.outputs.should_build == 'true'
+        env:
+          CURRENT_VERSION: ${{ steps.app_version.outputs.version }}
+          FIRST_RELEASE: ${{ steps.decision.outputs.first_release }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${FIRST_RELEASE}" == "true" ]]; then
+            next_version="${CURRENT_VERSION}"
+          else
+            IFS=. read -r major minor patch <<< "${CURRENT_VERSION}"
+            next_version="${major}.${minor}.$((patch + 1))"
+          fi
+          echo "Current version: ${CURRENT_VERSION}"
+          echo "Release version: ${next_version}"
+          echo "next_version=${next_version}" >> "$GITHUB_OUTPUT"
+
+  build-app:
+    name: Build ${{ needs.check_and_decide.outputs.app }}
+    needs: check_and_decide
+    if: needs.check_and_decide.outputs.should_build == 'true'
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/build-app.yml
+    with:
+      app: ${{ needs.check_and_decide.outputs.app }}
+      version: ${{ needs.check_and_decide.outputs.next_version }}
+      upstream_image: ${{ needs.check_and_decide.outputs.upstream_image }}
+      upstream_repo: ${{ needs.check_and_decide.outputs.upstream_repository }}
+      upstream_revision: ${{ needs.check_and_decide.outputs.upstream_revision }}
+      upstream_version: ${{ needs.check_and_decide.outputs.upstream_version }}
+    secrets: inherit
