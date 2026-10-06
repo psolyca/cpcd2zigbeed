@@ -1,7 +1,7 @@
 configuration:
   rcp_host:
     name: RTL8196E gateway IP
-    description: IP of the RTL8196E gateway (Lidl or Sengled) (keep default)
+    description: IP address of your RTL8196E gateway (Lidl or Sengled). Required, replace the example value.
   rcp_port:
     name: RTL8196E gateway port
     description: Port of the rtl8196e gateway (Lidl or Sengled)
