@@ -1,5 +1,5 @@
 name: "CPCd2Zigbeed"
-version: "1.0.0"
+version: "1.0.1"
 slug: "cpcd2zigbeed"
 description: >-
   CPCd to Zigbeed bridge to connect the EFR32 RCP firmware to Zigbee2MQTT usefull for
