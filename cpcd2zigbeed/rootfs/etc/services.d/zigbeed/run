@@ -8,7 +8,9 @@ ZIGBEED_IID="$(bashio::config 'zigbeed_iid')"
 CPC_BROADCAST_IID="$(bashio::config 'cpc_broadcast_iid')"
 ZIGBEED_BIND="$(bashio::config 'zigbeed_bind')"
 
-mkdir -p /var/lib/zigbeed
+# zigbeed keeps its network state (host_token.nvm) in its working directory.
+# /data is the only directory that survives app restarts and updates.
+cd /data
 
 bashio::log.info "Waiting for cpcd instance directory"
 until [[ -d "/dev/shm/cpcd/${CPCD_INSTANCE}" ]]; do
